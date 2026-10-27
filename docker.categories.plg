@@ -1,0 +1,315 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name    "docker.categories">
+<!ENTITY author  "Glitchtit">
+<!ENTITY version "2026.10.27e">
+<!ENTITY launch  "Settings/DockerCategoriesSettings">
+]>
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" min="7.0.0" icon="th-list">
+
+<CHANGES>
+### 2026.10.27e
+- Generic default categories (common public apps only).
+
+### 2026.10.27d
+- Filter box styled to match the tile instead of a white input.
+
+### 2026.10.27c
+- Collapsible sections (remembered per browser) and a filter box on the Dashboard tile.
+
+### 2026.10.27b
+- Fix: updates now replace old files (installer skipped existing ones).
+
+### 2026.10.27a
+- Settings page (Settings → User Utilities → Docker Categories) with live preview.
+- Config moved to categories.json (old categories.cfg is converted on install).
+
+### 2026.10.27
+- Initial release: group Dashboard Docker containers into category sections.
+</CHANGES>
+
+<!-- plugin install skips files that already exist, so clear old ones for updates -->
+<FILE Run="/bin/bash">
+<INLINE>
+rm -rf /usr/local/emhttp/plugins/docker.categories
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/docker.categories/README.md">
+<INLINE>
+<![CDATA[
+**Docker Categories**
+
+Groups the containers on the Dashboard's Docker tile into named sections, matched by container name.
+]]>
+</INLINE>
+</FILE>
+
+<!-- Default config: only used if the user has none yet. -->
+<FILE Name="/usr/local/emhttp/plugins/docker.categories/default.json">
+<INLINE>
+<![CDATA[
+[
+  ["Media", "^(jellyfin|jellystat|jellyseerr|plex|emby|tautulli|overseerr|seerr|wizarr|requestrr|audiobookshelf|navidrome|kavita|komga|calibre|immich|photoprism|tdarr)"],
+  ["Arr / Downloads", "^(sonarr|radarr|lidarr|readarr|bazarr|prowlarr|jackett|recyclarr|autobrr|cleanuparr|sabnzbd|nzbget|qbittorrent|transmission|deluge|unpackerr|flaresolverr)"],
+  ["Home Automation", "^(home-?assistant|mosquitto|zigbee2mqtt|zwave|esphome|node-?red|mqtt|n8n)"],
+  ["Game Servers", "^(pelican-|pterodactyl|[0-9a-f]{8}-[0-9a-f]{4}-|minecraft|valheim|satisfactory|palworld|terraria|v-rising|enshrouded|7dtd)"],
+  ["Web Apps", "^(ghost|wordpress|nextcloud|vaultwarden|paperless|bookstack|linkstack|gitea|forgejo)"],
+  ["Databases", "^(mysql|postgres|mariadb|redis|mongo|influx)"],
+  ["Network", "^(swag|nginx|traefik|caddy|cloudflare|unraid-cloudflared|ddns|pihole|adguard|dns|wireguard|tailscale|searxng|speedtest|myspeed)"],
+  ["System / Tools", "^(checkmk|glances?|grafana|prometheus|homepage|homarr|dashy|uptime-kuma|portainer|dozzle|watchtower|coolercontrol|ollama|open-webui)"]
+]
+]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/docker.categories/include/save.php">
+<INLINE>
+<![CDATA[
+<?
+// POST cats = JSON [[section, regex], ...] -> /boot/config/plugins/docker.categories/categories.json
+$cats = json_decode($_POST['cats'] ?? '', true);
+if (!is_array($cats)) { http_response_code(400); die('Bad request'); }
+$out = [];
+foreach ($cats as $c) {
+  if (!is_array($c) || count($c) != 2 || !is_string($c[0]) || !is_string($c[1]) || trim($c[0]) === '') {
+    http_response_code(400); die('Invalid entry');
+  }
+  $out[] = [trim($c[0]), $c[1]];
+}
+$f = '/boot/config/plugins/docker.categories/categories.json';
+@mkdir(dirname($f), 0777, true);
+if (file_put_contents("$f.tmp", json_encode($out, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)."\n") === false || !rename("$f.tmp", $f)) {
+  http_response_code(500); die('Could not write config to flash');
+}
+echo 'ok';
+]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/docker.categories/DockerCategories.page">
+<INLINE>
+<![CDATA[
+Menu="Buttons"
+Link="nav-user"
+---
+<?
+// Buttons pages are evaluated in <head> on every page; only act on the Dashboard.
+if (($task ?? '') == 'Dashboard'):
+  $dcats = json_decode(@file_get_contents('/boot/config/plugins/docker.categories/categories.json'), true) ?: [];
+?>
+<style>
+#docker_view .dcat{display:flow-root;clear:both}
+#docker_view .dcat-head{display:block;clear:both;margin:4px 0 12px;padding-bottom:3px;border-bottom:1px solid var(--table-alt-border-color,#555);font-weight:bold;font-size:1.2rem;text-transform:uppercase;letter-spacing:.05em;opacity:.75;cursor:pointer;user-select:none}
+#docker_view .dcat-head:hover{opacity:1}
+#docker_view .dcat-head i{width:14px;margin-right:4px}
+#docker_view .dcat-head .dcat-n{font-weight:normal;opacity:.7;margin-left:6px}
+#docker_view .dcat-filter{display:block;margin:0 0 10px}
+#docker_view .dcat-filter input{width:100%;box-sizing:border-box;margin:0;padding:5px 8px;background:transparent;color:inherit;border:1px solid var(--table-alt-border-color,#555);border-radius:4px;font:inherit;font-size:1.3rem;outline:none}
+#docker_view .dcat-filter input:focus{border-color:currentColor}
+#docker_view .dcat-filter input::placeholder{color:inherit;opacity:.5}
+#docker_view span.outer.dcat-out{display:none !important}
+/* collapsed sections hide their containers, except while a filter is typed */
+#docker_view td:not(.dcat-filtering) .dcat.collapsed > span.outer{display:none}
+/* hide a section when "Started only" or the filter has hidden all its containers */
+#docker_view .dcat:not(:has(> span.outer:not([style*="display: none"]):not(.dcat-out))){display:none}
+</style>
+<script>
+$(function(){
+  var view = document.getElementById('docker_view');
+  if (!view) return;
+  var cats = <?=json_encode($dcats, JSON_HEX_TAG)?>.map(function(c){
+    try { return [c[0], new RegExp(c[1],'i')]; } catch(e) { console.warn('docker.categories: bad regex for '+c[0], e); return null; }
+  }).filter(Boolean);
+  // collapsed section names, per browser
+  var collapsed = [];
+  try { collapsed = JSON.parse(localStorage.getItem('dcat-collapsed')) || []; } catch(e) {}
+  function saveCollapsed() { try { localStorage.setItem('dcat-collapsed', JSON.stringify(collapsed)); } catch(e) {} }
+  var filterText = ''; // survives tile refreshes
+  function applyFilter(td) {
+    var q = filterText.trim().toLowerCase();
+    td.toggleClass('dcat-filtering', q !== '');
+    td.find('span.outer.apps').each(function(){
+      $(this).toggleClass('dcat-out', q !== '' && $(this).find('.inner > span').first().text().toLowerCase().indexOf(q) < 0);
+    });
+  }
+  function group(){
+    var td = $('#docker_view tr.updated > td').first();
+    if (!td.length || td.children('.dcat').length) return;
+    var buckets = {};
+    td.children('span.outer.apps').each(function(){
+      var name = $(this).find('.inner > span').first().text(), cat = 'Other';
+      for (var i=0; i<cats.length; i++) if (cats[i][1].test(name)) { cat = cats[i][0]; break; }
+      (buckets[cat] = buckets[cat] || []).push(this);
+    });
+    var anchor = td.children('#no_apps');
+    cats.map(function(c){return c[0];}).concat('Other').forEach(function(cat){
+      if (!buckets[cat]) return;
+      var shut = collapsed.indexOf(cat) >= 0;
+      var head = $('<span class="dcat-head" role="button" tabindex="0">').attr('aria-expanded', !shut)
+        .append($('<i class="fa">').addClass(shut ? 'fa-chevron-right' : 'fa-chevron-down'), $('<span>').text(cat), $('<span class="dcat-n">').text(buckets[cat].length));
+      var div = $('<div class="dcat">').toggleClass('collapsed', shut).append(head).append(buckets[cat]);
+      head.on('click keydown', function(e){
+        if (e.type == 'keydown' && e.key != 'Enter' && e.key != ' ') return;
+        e.preventDefault();
+        var now = !div.hasClass('collapsed');
+        div.toggleClass('collapsed', now);
+        head.attr('aria-expanded', !now).find('i').toggleClass('fa-chevron-right', now).toggleClass('fa-chevron-down', !now);
+        collapsed = collapsed.filter(function(c){ return c != cat; });
+        if (now) collapsed.push(cat);
+        saveCollapsed();
+      });
+      anchor.length ? div.insertBefore(anchor) : td.append(div);
+    });
+    var input = $('<input type="search" placeholder="Filter containers…" aria-label="Filter containers">').val(filterText)
+      .on('input', function(){ filterText = this.value; applyFilter(td); })
+      .on('keydown', function(e){ if (e.key == 'Escape') { filterText = this.value = ''; applyFilter(td); } });
+    td.prepend($('<span class="dcat-filter">').append(input));
+    applyFilter(td);
+  }
+  // the tile is (re)filled by an async POST; regroup whenever its rows change
+  new MutationObserver(group).observe(view, {childList:true});
+  group();
+});
+</script>
+<?endif;?>
+]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/docker.categories/DockerCategoriesSettings.page">
+<INLINE>
+<![CDATA[
+Menu="Utilities"
+Title="Docker Categories"
+Icon="th-list"
+---
+<?
+$dcCats = json_decode(@file_get_contents('/boot/config/plugins/docker.categories/categories.json'), true) ?: [];
+exec("docker ps -a --format '{{.Names}}' 2>/dev/null", $dcNames);
+natcasesort($dcNames);
+?>
+<style>
+#dcat-table{width:100%;border-collapse:collapse;margin:8px 0}
+#dcat-table th{text-align:left;padding:6px 4px;font-weight:bold}
+#dcat-table td{padding:4px;vertical-align:middle}
+#dcat-table input.dc-name{width:200px}
+#dcat-table input.dc-pat{width:100%;font-family:monospace}
+#dcat-table input.bad{border-color:#e22828;color:#e22828}
+#dcat-table td.dc-count{white-space:nowrap;opacity:.7;width:110px}
+#dcat-table td.dc-btns{white-space:nowrap;width:110px}
+#dcat-table td.dc-btns i{cursor:pointer;padding:0 6px;font-size:1.6rem}
+#dcat-preview h4{margin:14px 0 4px;text-transform:uppercase;font-size:1.2rem;opacity:.8}
+#dcat-preview span.dc-chip{display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:10px;background:var(--mild-background-color,rgba(128,128,128,.15));font-size:1.2rem}
+#dcat-status{margin-left:10px}
+</style>
+
+<p>Each section collects the containers whose name matches its pattern (a regular expression, case-insensitive).
+Sections are shown on the Dashboard in this order; the first matching section wins and unmatched containers go under <b>Other</b>.</p>
+
+<table id="dcat-table">
+  <thead><tr><th>Section</th><th>Pattern</th><th>Matches</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<input type="button" value="Add section" onclick="dcAdd('','')">
+<input type="button" value="Apply" onclick="dcSave()"><span id="dcat-status"></span>
+
+<div id="dcat-preview"></div>
+
+<script>
+var dcNames = <?=json_encode(array_values($dcNames), JSON_HEX_TAG)?>;
+
+function dcAdd(name, pat) {
+  var tr = $('<tr>').append(
+    $('<td>').append($('<input type="text" class="dc-name" placeholder="Section name">').val(name)),
+    $('<td>').append($('<input type="text" class="dc-pat" placeholder="^(sonarr|radarr)">').val(pat)),
+    $('<td class="dc-count">'),
+    $('<td class="dc-btns">').append(
+      $('<i class="fa fa-arrow-up" title="Move up">').click(function(){ tr.prev().before(tr); dcPreview(); }),
+      $('<i class="fa fa-arrow-down" title="Move down">').click(function(){ tr.next().after(tr); dcPreview(); }),
+      $('<i class="fa fa-trash red-text" title="Remove">').click(function(){ tr.remove(); dcPreview(); })
+    )
+  );
+  $('#dcat-table tbody').append(tr);
+  dcPreview();
+}
+
+// rows as [[name, pattern, RegExp|null], ...]; null RegExp = invalid pattern
+function dcRows() {
+  return $('#dcat-table tbody tr').map(function(){
+    var name = $(this).find('.dc-name').val().trim(), pat = $(this).find('.dc-pat').val(), re = null;
+    try { re = new RegExp(pat, 'i'); } catch(e) {}
+    return [[name, pat, re]];
+  }).get();
+}
+
+function dcPreview() {
+  var rows = dcRows(), buckets = {};
+  $('#dcat-table tbody tr').each(function(i){
+    $(this).find('.dc-pat').toggleClass('bad', !rows[i][2]);
+    $(this).find('.dc-name').toggleClass('bad', !rows[i][0]);
+  });
+  dcNames.forEach(function(n){
+    var cat = 'Other';
+    for (var i=0; i<rows.length; i++) if (rows[i][2] && rows[i][1] !== '' && rows[i][2].test(n)) { cat = i; break; }
+    (buckets[cat] = buckets[cat] || []).push(n);
+  });
+  $('#dcat-table tbody tr').each(function(i){ $(this).find('.dc-count').text((buckets[i] || []).length + ' containers'); });
+  var out = $('#dcat-preview').empty().append('<h3>Preview</h3>');
+  rows.map(function(r,i){ return [r[0] || '(unnamed)', i]; }).concat([['Other','Other']]).forEach(function(c){
+    if (!buckets[c[1]]) return;
+    out.append($('<h4>').text(c[0] + ' (' + buckets[c[1]].length + ')'),
+      $('<div>').append(buckets[c[1]].map(function(n){ return $('<span class="dc-chip">').text(n); })));
+  });
+}
+
+function dcSave() {
+  var rows = dcRows(), seen = {};
+  for (var i=0; i<rows.length; i++) {
+    if (!rows[i][0]) return dcStatus('Every section needs a name.', true);
+    if (!rows[i][2]) return dcStatus('Invalid pattern in "' + rows[i][0] + '".', true);
+    if (seen[rows[i][0].toLowerCase()]) return dcStatus('Duplicate section "' + rows[i][0] + '".', true);
+    seen[rows[i][0].toLowerCase()] = 1;
+  }
+  $.post('/plugins/docker.categories/include/save.php', {cats: JSON.stringify(rows.map(function(r){ return [r[0], r[1]]; }))})
+    .done(function(){ dcStatus('Saved. Reload the Dashboard to see it.', false); })
+    .fail(function(x){ dcStatus('Save failed: ' + (x.responseText || x.statusText), true); });
+}
+
+function dcStatus(msg, bad) { $('#dcat-status').text(msg).attr('class', bad ? 'red-text' : 'green-text'); }
+
+$(function(){
+  <?=json_encode($dcCats, JSON_HEX_TAG)?>.forEach(function(c){ dcAdd(c[0], c[1]); });
+  $('#dcat-table').on('input', 'input', dcPreview);
+});
+</script>
+]]>
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+<![CDATA[
+d=/boot/config/plugins/docker.categories
+mkdir -p $d
+if [ ! -f $d/categories.json ]; then
+  if [ -f $d/categories.cfg ]; then
+    # migrate the old INI config from the first release
+    php -r '$o=[]; foreach (parse_ini_file($argv[1], false, INI_SCANNER_RAW) ?: [] as $k => $v) $o[] = [$k, $v]; echo json_encode($o, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES), "\n";' $d/categories.cfg > $d/categories.json && rm $d/categories.cfg
+  else
+    cp /usr/local/emhttp/plugins/docker.categories/default.json $d/categories.json
+  fi
+fi
+echo "docker.categories installed. Configure under Settings -> User Utilities -> Docker Categories."
+]]>
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+rm -rf /usr/local/emhttp/plugins/docker.categories
+echo "docker.categories removed (config kept in /boot/config/plugins/docker.categories)."
+</INLINE>
+</FILE>
+
+</PLUGIN>
