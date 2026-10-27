@@ -2,13 +2,16 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name    "docker.categories">
 <!ENTITY author  "Glitchtit">
-<!ENTITY version "2026.10.27f">
+<!ENTITY version "2026.10.27g">
 <!ENTITY launch  "Settings/DockerCategoriesSettings">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/Glitchtit/unraid-docker-categories/main/docker.categories.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" support="https://github.com/Glitchtit/unraid-docker-categories" min="7.0.0" icon="th-list">
 
 <CHANGES>
+### 2026.10.27g
+- "Autostart, not running" section at the bottom, shown even with "Started only" on.
+
 ### 2026.10.27f
 - Updates from GitHub (pluginURL).
 
@@ -101,6 +104,8 @@ Link="nav-user"
 // Buttons pages are evaluated in <head> on every page; only act on the Dashboard.
 if (($task ?? '') == 'Dashboard'):
   $dcats = json_decode(@file_get_contents('/boot/config/plugins/docker.categories/categories.json'), true) ?: [];
+  // lines are "name" or "name delay"
+  $dcAuto = array_map(function($l){ return strtok($l, ' '); }, @file('/var/lib/docker/unraid-autostart', FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES) ?: []);
 ?>
 <style>
 #docker_view .dcat{display:flow-root;clear:both}
@@ -116,12 +121,18 @@ if (($task ?? '') == 'Dashboard'):
 /* collapsed sections hide their containers, except while a filter is typed */
 #docker_view td:not(.dcat-filtering) .dcat.collapsed > span.outer{display:none}
 /* hide a section when "Started only" or the filter has hidden all its containers */
-#docker_view .dcat:not(:has(> span.outer:not([style*="display: none"]):not(.dcat-out))){display:none}
+#docker_view .dcat:not(.dcat-alert):not(:has(> span.outer:not([style*="display: none"]):not(.dcat-out))){display:none}
+/* autostart-but-stopped section: shown even with "Started only" on */
+#docker_view .dcat-alert .dcat-head{color:#f0a30a;border-color:#f0a30a;opacity:1}
+#docker_view .dcat-alert > span.outer:not(.dcat-out){display:block !important}
+#docker_view td:not(.dcat-filtering) .dcat.dcat-alert.collapsed > span.outer{display:none !important}
+#docker_view .dcat-alert:not(:has(> span.outer:not(.dcat-out))){display:none}
 </style>
 <script>
 $(function(){
   var view = document.getElementById('docker_view');
   if (!view) return;
+  var auto = <?=json_encode($dcAuto, JSON_HEX_TAG)?>, ALERT = 'Autostart, not running';
   var cats = <?=json_encode($dcats, JSON_HEX_TAG)?>.map(function(c){
     try { return [c[0], new RegExp(c[1],'i')]; } catch(e) { console.warn('docker.categories: bad regex for '+c[0], e); return null; }
   }).filter(Boolean);
@@ -143,16 +154,17 @@ $(function(){
     var buckets = {};
     td.children('span.outer.apps').each(function(){
       var name = $(this).find('.inner > span').first().text(), cat = 'Other';
-      for (var i=0; i<cats.length; i++) if (cats[i][1].test(name)) { cat = cats[i][0]; break; }
+      if ($(this).hasClass('stopped') && auto.indexOf(name) >= 0) cat = ALERT;
+      else for (var i=0; i<cats.length; i++) if (cats[i][1].test(name)) { cat = cats[i][0]; break; }
       (buckets[cat] = buckets[cat] || []).push(this);
     });
     var anchor = td.children('#no_apps');
-    cats.map(function(c){return c[0];}).concat('Other').forEach(function(cat){
+    cats.map(function(c){return c[0];}).concat('Other', ALERT).forEach(function(cat){
       if (!buckets[cat]) return;
       var shut = collapsed.indexOf(cat) >= 0;
       var head = $('<span class="dcat-head" role="button" tabindex="0">').attr('aria-expanded', !shut)
         .append($('<i class="fa">').addClass(shut ? 'fa-chevron-right' : 'fa-chevron-down'), $('<span>').text(cat), $('<span class="dcat-n">').text(buckets[cat].length));
-      var div = $('<div class="dcat">').toggleClass('collapsed', shut).append(head).append(buckets[cat]);
+      var div = $('<div class="dcat">').toggleClass('collapsed', shut).toggleClass('dcat-alert', cat == ALERT).append(head).append(buckets[cat]);
       head.on('click keydown', function(e){
         if (e.type == 'keydown' && e.key != 'Enter' && e.key != ' ') return;
         e.preventDefault();
